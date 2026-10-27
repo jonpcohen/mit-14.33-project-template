@@ -66,3 +66,9 @@ Draft this section prior to the meeting and revise this section after the meetin
 1. **Specific deliverable (target date):** One-sentence completion criterion + optional link to GitHub issue
 2. ...
 3. ...
+
+## 5. AI disclosure
+
+For the work reported in this agenda, state whether you used AI. If there was no AI use, simply state that. If there was any AI use, write 2–4 sentences describing what you used it for, one benefit, and one limitation. You may consider effects on both your work and your learning. If AI was forbidden for any component of the work, attest that you complied with that restriction.
+
+- **AI-use statement:**
