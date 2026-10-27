@@ -69,6 +69,6 @@ Draft this section prior to the meeting and revise this section after the meetin
 
 ## 5. AI disclosure
 
-For the work reported in this agenda, state whether you used AI. If there was no AI use, simply state that. If there was any AI use, write 2–4 sentences describing what you used it for, one benefit, and one limitation. You may consider effects on both your work and your learning. If AI was forbidden for any component of the work, attest that you complied with that restriction.
+State whether you used AI to prepare the meeting agenda content or any linked issues. If there was no AI use, simply state that. If there was any AI use, write 2–4 sentences describing what you used it for, one benefit, and one limitation.
 
 - **AI-use statement:**
