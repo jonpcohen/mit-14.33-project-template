@@ -14,6 +14,9 @@ and post a brief GitHub issue. Run the one-time setup on your own computer to
 enable weekly reviews. Reports are also saved locally under `.audit/runs/`;
 the latest report is `.audit/latest.md`. These local files are ignored by Git.
 
+The [TA handoff](tools/TA-HANDOFF.md) describes how to review the audit and develop
+interactive quizzes about the project's code and research design.
+
 ## Repository structure
 
 | Directory | Purpose |
