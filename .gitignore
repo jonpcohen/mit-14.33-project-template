@@ -27,6 +27,9 @@ venv/
 *_files/
 *.log
 
+# Local weekly audit configuration, reports, and provider logs
+.audit/
+
 # Data are excluded by default. Deliberately revise these rules only when
 # files are small, redistributable, and free of sensitive information.
 data/raw/*

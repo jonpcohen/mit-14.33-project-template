@@ -6,6 +6,14 @@ Replace this text with a one-sentence description of the research question.
 
 Document the software requirements and the single command needed to reproduce the analysis. Until the project has a one-command workflow, list the scripts in the exact order they should be run.
 
+## Weekly research code review
+
+The [weekly audit setup instructions](tools/research-audit/README.md) explain how
+to use an existing Codex, Claude Code, or Gemini CLI login to review the project
+and post a brief GitHub issue. Run the one-time setup on your own computer to
+enable weekly reviews. Reports are also saved locally under `.audit/runs/`;
+the latest report is `.audit/latest.md`. These local files are ignored by Git.
+
 ## Repository structure
 
 | Directory | Purpose |
