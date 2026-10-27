@@ -119,7 +119,8 @@ class ScheduleTests(unittest.TestCase):
         root = Path("/project with spaces")
         _, data, _ = audit.scheduler_spec(root, config, "Darwin")
         launch = plistlib.loads(data)
-        self.assertEqual(launch["StartInterval"], 3600)
+        self.assertEqual(launch["StartCalendarInterval"], {"Minute": 17})
+        self.assertTrue(launch["RunAtLoad"])
         self.assertIn("--scheduled", launch["ProgramArguments"])
         self.assertEqual(launch["EnvironmentVariables"]["PATH"], config["path"])
         _, data, _ = audit.scheduler_spec(root, config, "Linux")
@@ -130,6 +131,16 @@ class ScheduleTests(unittest.TestCase):
         namespace = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
         self.assertEqual(task.find(".//t:Interval", namespace).text, "PT1H")
         self.assertEqual(task.find(".//t:LogonType", namespace).text, "InteractiveToken")
+        self.assertEqual(task.find(".//t:LogonTrigger/t:Delay", namespace).text, "PT2M")
+        self.assertEqual(task.find(".//t:SessionStateChangeTrigger/t:StateChange", namespace).text, "SessionUnlock")
+        self.assertEqual(task.find(".//t:SessionStateChangeTrigger/t:Delay", namespace).text, "PT2M")
+        # Task Scheduler requires base fields before the Repetition element.
+        time_trigger = task.find(".//t:TimeTrigger", namespace)
+        self.assertEqual([e.tag.split("}")[-1] for e in time_trigger], ["StartBoundary", "Repetition"])
+        timer = audit.linux_timer({"time": "18:17"})
+        self.assertIn("OnStartupSec=2min", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("OnCalendar=*-*-* *:17:00", timer)
 
 
 class GitIntegrationTests(unittest.TestCase):
@@ -249,6 +260,30 @@ class GitIntegrationTests(unittest.TestCase):
         with patch.object(audit, "repository_info") as info:
             audit.perform_run(self.root, self.directory, {"next_due": audit.time.time() + 3600}, self.args)
         info.assert_not_called()
+
+    def test_multiple_missed_weeks_catch_up_once_then_return_to_schedule(self):
+        from unittest.mock import Mock
+        self.args.scheduled = True
+        config = {"day": "sun", "time": "18:17", "next_due": audit.time.time() - 14 * 86400}
+        generated = Mock(return_value=review())
+        posted = Mock(return_value="https://github.com/owner/repo/issues/4")
+        with patch.object(audit, "repository_info", return_value=("owner/repo", "main", self.sha)) as info, \
+             patch.object(audit, "generate_review", generated), patch.object(audit, "post_report", posted):
+            audit.perform_run(self.root, self.directory, config, self.args)
+            updated = audit.read_json(self.directory / "config.json")
+            self.assertGreater(updated["next_due"], audit.time.time())
+            audit.perform_run(self.root, self.directory, updated, self.args)
+        generated.assert_called_once()
+        posted.assert_called_once()
+        info.assert_called_once()
+
+    def test_reinstall_preserves_overdue_review(self):
+        overdue = audit.time.time() - 86400
+        audit.write_json(self.directory / "config.json", {"day": "sun", "time": "18:17", "next_due": overdue})
+        args = argparse.Namespace(provider="codex", model=None, day="sun", time="18:17", no_schedule=True)
+        with patch.object(audit.shutil, "which", return_value="/bin/codex"), patch.object(audit, "command"):
+            audit.install(self.root, self.directory, args)
+        self.assertEqual(audit.read_json(self.directory / "config.json")["next_due"], overdue)
 
     def test_no_code_uses_no_model_and_posts_no_issue(self):
         from unittest.mock import Mock

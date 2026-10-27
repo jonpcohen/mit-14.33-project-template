@@ -77,15 +77,26 @@ change providers, or replace your Python/CLI installation.
 - Linux: installs a systemd user service and timer.
 
 The scheduler checks once an hour whether the weekly review is due. **It does
-not call the model hourly.** A due review runs when the computer is available;
-after a missed time, the next hourly check can catch up. Keep the computer on,
-connected to the internet, and logged in. A sleeping/offline computer or an
-expired login can delay a report. Usage limits can also interrupt a review.
+not call the model hourly.** It also checks after login/startup: macOS runs a
+check when the LaunchAgent loads and catches up calendar events missed during
+sleep; Windows checks about two minutes after login or unlocking; Linux checks
+about two minutes after the user's service manager starts and catches up missed
+calendar events. Opening a laptop usually wakes it; unlocking/logging in ensures
+the student's session and saved credentials are available.
+
+An overdue audit runs **once**, reviewing the latest pushed code. It does not
+produce a backlog if several weeks were missed. Keep the computer connected to
+the internet and logged in. If the network is not ready at login/wake, the next
+hourly check retries. A sleeping/offline computer or an expired login can delay
+a report. Usage limits can also interrupt a review.
 Failed model or publishing attempts are retried after a six-hour delay; a failed
 fetch or repository lookup is retried at the next hourly check.
 
 The schedule is local, not a GitHub Actions job. No terminal window needs to stay
 open. It cannot produce a report while the student's computer remains off.
+After updating the scheduling code, re-run the same `install --provider ...`
+command to refresh the operating-system schedule. Reinstalling with the same
+day and time preserves an already-overdue review.
 
 ## Saved artifacts
 

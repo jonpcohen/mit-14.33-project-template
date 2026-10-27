@@ -488,7 +488,10 @@ def scheduler_spec(root, config, system=None):
     if system == "Darwin":
         path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
         body = {"Label": label, "ProgramArguments": argv, "WorkingDirectory": str(root),
-                "StartInterval": 3600, "RunAtLoad": True,
+                # Calendar events coalesce across sleep; RunAtLoad covers login
+                # after shutdown. The Python due check prevents extra reviews.
+                "StartCalendarInterval": {"Minute": int(config.get("time", "18:17").split(":")[1])},
+                "RunAtLoad": True,
                 "EnvironmentVariables": {"PATH": config["path"]},
                 "StandardOutPath": str(root / ".audit" / "scheduler.log"),
                 "StandardErrorPath": str(root / ".audit" / "scheduler-error.log")}
@@ -498,14 +501,27 @@ def scheduler_spec(root, config, system=None):
         task = ET.Element("Task", {"version": "1.2", "xmlns": "http://schemas.microsoft.com/windows/2004/02/mit/task"})
         triggers = ET.SubElement(task, "Triggers")
         trigger = ET.SubElement(triggers, "TimeTrigger")
+        now = dt.datetime.now()
+        boundary = now.replace(minute=int(config.get("time", "18:17").split(":")[1]), second=0, microsecond=0)
+        if boundary <= now:
+            boundary += dt.timedelta(hours=1)
+        # Optional Enabled is omitted so the shared trigger-base fields follow
+        # the schema order across Task Scheduler versions.
+        ET.SubElement(trigger, "StartBoundary").text = boundary.isoformat(timespec="seconds")
         repetition = ET.SubElement(trigger, "Repetition")
         ET.SubElement(repetition, "Interval").text = "PT1H"
         ET.SubElement(repetition, "StopAtDurationEnd").text = "false"
-        ET.SubElement(trigger, "StartBoundary").text = (dt.datetime.now() + dt.timedelta(minutes=2)).isoformat(timespec="seconds")
-        ET.SubElement(trigger, "Enabled").text = "true"
+        user = command(["whoami"]).stdout.strip()
+        login = ET.SubElement(triggers, "LogonTrigger")
+        ET.SubElement(login, "UserId").text = user
+        ET.SubElement(login, "Delay").text = "PT2M"
+        unlock = ET.SubElement(triggers, "SessionStateChangeTrigger")
+        ET.SubElement(unlock, "UserId").text = user
+        ET.SubElement(unlock, "Delay").text = "PT2M"
+        ET.SubElement(unlock, "StateChange").text = "SessionUnlock"
         principals = ET.SubElement(task, "Principals")
         principal = ET.SubElement(principals, "Principal", {"id": "Student"})
-        ET.SubElement(principal, "UserId").text = command(["whoami"]).stdout.strip()
+        ET.SubElement(principal, "UserId").text = user
         ET.SubElement(principal, "LogonType").text = "InteractiveToken"
         ET.SubElement(principal, "RunLevel").text = "LeastPrivilege"
         settings = ET.SubElement(task, "Settings")
@@ -534,12 +550,15 @@ def install(root, directory, args):
     if not executable:
         raise AuditError(f"Install {args.provider} and sign in before installing the audit schedule.")
     command(["gh", "auth", "status"])
-    if args.no_schedule and read_json(directory / "config.json", {}).get("scheduler"):
+    previous = read_json(directory / "config.json", {})
+    if args.no_schedule and previous.get("scheduler"):
         uninstall(directory)
     config = {"provider": args.provider, "model": args.model, "executable": executable,
               "python": sys.executable, "path": os.environ.get("PATH", ""),
               "day": args.day, "time": args.time, "next_due": next_weekly(args.day, args.time),
               "timeout_seconds": 900}
+    if previous.get("day") == args.day and previous.get("time") == args.time:
+        config["next_due"] = previous.get("next_due", config["next_due"])
     if not args.no_schedule:
         path, body, label = scheduler_spec(root, config)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -555,7 +574,7 @@ def install(root, directory, args):
             command(["schtasks", "/Create", "/TN", label, "/XML", path, "/F"])
         else:
             timer = path.with_suffix(".timer")
-            timer.write_text("[Unit]\nDescription=Check weekly research audit schedule\n[Timer]\nOnCalendar=hourly\nPersistent=true\n[Install]\nWantedBy=timers.target\n", encoding="utf-8")
+            timer.write_text(linux_timer(config), encoding="utf-8")
             write_json(directory / "config.json", config)
             command(["systemctl", "--user", "daemon-reload"])
             command(["systemctl", "--user", "enable", "--now", f"{label}.timer"])
@@ -564,6 +583,13 @@ def install(root, directory, args):
     print(f"Configured {args.provider}; weekly on {args.day} at {args.time} (computer's local time).")
     print("The hourly scheduler only checks whether a review is due; it does not call the model hourly.")
     print("Test now: python3 tools/research-audit/audit.py run --no-post")
+
+
+def linux_timer(config):
+    minute = int(config["time"].split(":")[1])
+    return ("[Unit]\nDescription=Check weekly research audit schedule\n[Timer]\n"
+            f"OnCalendar=*-*-* *:{minute:02d}:00\nOnStartupSec=2min\nPersistent=true\n"
+            "[Install]\nWantedBy=timers.target\n")
 
 
 def uninstall(directory):
