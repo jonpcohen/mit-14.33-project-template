@@ -6,16 +6,20 @@ Replace this text with a one-sentence description of the research question.
 
 Document the software requirements and the single command needed to reproduce the analysis. Until the project has a one-command workflow, list the scripts in the exact order they should be run.
 
+## Meeting preparation and project decisions
+
+On your project's GitHub page, select **Issues → New issue** and choose
+**Meeting preparation** to prepare for a 1-on-1 meeting, or **Project decision or question**
+to document a consequential question or decision. The templates contain the
+prompts to complete.
+
 ## Weekly research code review
 
-The [weekly audit setup instructions](tools/research-audit/README.md) explain how
-to use an existing Codex, Claude Code, or Gemini CLI login to review the project
-and post a brief GitHub issue. Run the one-time setup on your own computer to
-enable weekly reviews. Reports are also saved locally under `.audit/runs/`;
-the latest report is `.audit/latest.md`. These local files are ignored by Git.
-
-The [TA handoff](tools/TA-HANDOFF.md) describes how to review the audit and develop
-interactive quizzes about the project's code and research design.
+The [audit setup guide](tools/research-audit/README.md) explains how to enable
+weekly code reviews on your computer using an existing Codex, Claude Code, or
+Gemini CLI login. Reviews examine the pushed default branch and post a brief
+GitHub issue; they do not run the analysis. The latest local report is saved
+at `.audit/latest.md`, which is ignored by Git.
 
 ## Repository structure
 
@@ -26,6 +30,7 @@ interactive quizzes about the project's code and research design.
 | `data/derived/` | Data created by the project's code; ignored by Git unless explicitly allowed |
 | `output/` | Generated figures, tables, and other results |
 | `paper/` | Paper source files and rendered drafts |
+| `tools/research-audit/` | Weekly code review tool, setup instructions, and review rubric |
 
 ## Working practices
 
