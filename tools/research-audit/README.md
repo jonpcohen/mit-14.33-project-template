@@ -1,7 +1,8 @@
 # Weekly research reproducibility audit
 
-This tool reviews undergraduate economics research code and posts a short GitHub
-issue with at most three priorities. It uses **your existing signed-in CLI**:
+This tool reviews undergraduate economics research code and posts a GitHub issue
+usually centered on about three priorities, with further worthwhile findings
+available when warranted. It uses **your existing signed-in CLI**:
 Codex with ChatGPT, Claude Code with Claude, or Gemini CLI with Google. Separate
 API keys are not required. Runs count toward your account's usage allowance.
 
@@ -175,11 +176,66 @@ what a successful fix accomplishes. A short code example, up to five lines, is
 included when it helps explain the suggestion using the project's own variables
 and structure. Suggested examples are not executed by the audit.
 These are inspection prompts, not required criticisms; a review can return no
-findings. Advice should fit the project's size and stage. Broader organizational
+findings. Three is a usual number of priorities, not a hard limit. The report's
+**Start here** section shows the first three findings and every **high** priority
+finding; further findings appear in an expandable **Additional improvements**
+section. All findings retain their evidence, next step, completion criterion,
+and any example. High priority indicates a serious risk to results or reproduction.
+Additional findings must meet the same evidence and usefulness standards.
+Advice should fit the project's size and stage. Broader organizational
 changes are appropriate when their benefits justify the work. Findings require
 matching file-and-line evidence. An unverified risk is labeled **check**, rather
 than called a proven error. The report is advisory; matching evidence does not
 prove the diagnosis.
+
+Reproducibility checks include a documented single command or master script for
+cleaning, analysis, and output generation from the documented inputs. The master
+script can call separate scripts. Projects still building that workflow should
+provide the exact execution order and any manual steps.
+The review also looks for dependence on variables left in memory, undocumented
+generated files, or manual code edits between final specifications. Documented
+caching is acceptable when intermediates can be regenerated.
+
+Environment setup instructions should explain how to recreate the environment,
+install dependencies, and run the analysis within it. For Python analyses using
+external packages, encourage a virtual environment or equivalent managed
+environment using the project's existing tools. The environment directory should
+stay out of Git; its absence is not evidence that the student is not using one.
+
+For data obtained outside the code, the review looks for a README or linked data
+README identifying the provider/dataset, source link, release/version or vintage
+where available, retrieval date, download selections or filters, expected
+filenames, file locations, and access restrictions. The instructions should let
+another researcher obtain the same inputs. A retrieval date alone may not identify
+the data used if the provider revises it; identify the release or saved extract
+where possible. Clear manual download instructions can be sufficient.
+
+For dependency versions, the review recommends using the project's existing tools.
+If its package manager generates a lockfile, keep it in Git and document how to
+install from it. A lockfile records exact selected versions, including dependencies
+of other packages. For a simple pip-based Python project, a pinned requirements
+file from the working project environment plus the Python version and install
+command is a reasonable starting point. Package names or broad version ranges
+alone do not record the exact versions used. There is no requirement to change
+package managers or add a lockfile when the environment is adequately recorded.
+See [pip's repeatable installation guidance](https://pip.pypa.io/en/stable/topics/repeatable-installs/)
+and [uv's lockfile documentation](https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile).
+
+Other foundational checks cover preserving original inputs, reproducing cleaning
+steps in code, saving final outputs directly from code, and identifying the scripts
+and paths that produce those outputs. Ambiguous definitions or units of key
+constructed variables can warrant a concise explanation or a codebook reference.
+Special software/OS requirements or substantial runtime/storage needs should be
+documented when they affect another researcher's ability to run the project.
+
+These checks adapt the Social Science Data Editors' [author guidance](https://social-science-data-editors.github.io/guidance/Guidance/),
+[code guidance](https://social-science-data-editors.github.io/new-guidance/Guidance/Requested_information_code.html),
+[Python environment guidance](https://social-science-data-editors.github.io/guidance/Samples/sample-python-configuration.html#virtual-environments),
+and [replication README template](https://social-science-data-editors.github.io/template_README/template-README.html)
+for undergraduate projects. Findings still need a concrete benefit and supporting
+evidence. Clear filenames, brief comments, and existing documentation can suffice;
+the audit does not require a full journal submission checklist or extra diagnostic
+reports. Approximate runtime notes do not require a benchmarking exercise.
 
 Reviews use the previous locally saved report and its commit/coverage information
 to acknowledge verified fixes and carry forward important unresolved concerns.

@@ -31,7 +31,8 @@ class SourceTests(unittest.TestCase):
     def test_scope(self):
         for name in ("data/raw/values.csv", "data/raw/secret.py", "output/result.json", "paper/draft.qmd", "archive/old.py", ".venv/lib/example.py", "tests/test_analysis.py", ".env", "config/secrets.json", "credentials.json", "data/config.yaml", "tools/research-audit/audit.py"):
             self.assertIsNone(audit.source_kind(name), name)
-        for name in ("code/clean.py", "code/table.R", "code/results.do", "code/notebook.ipynb", "analysis.qmd"):
+        for name in ("code/clean.py", "code/table.R", "code/results.do", "code/notebook.ipynb", "analysis.qmd",
+                     "run.ps1", "run.bat", "run.cmd"):
             self.assertEqual(audit.source_kind(name), "code", name)
         for name in ("README.md", "data/raw/README.md", "requirements.txt", ".env.example",
                      "config.yaml", "config/analysis.json", "settings.toml", "uv.lock", "requirements-dev.txt"):
@@ -58,6 +59,68 @@ class SourceTests(unittest.TestCase):
 class ReviewTests(unittest.TestCase):
     def setUp(self):
         self.files = [{"file": "code/analysis.py", "text": "value = 1\n"}]
+
+    def findings_review(self, priorities):
+        return {"summary": "Prioritized research-code improvements.", "findings": [
+            {**review()["findings"][0], "title": f"Finding {index}", "priority": priority}
+            for index, priority in enumerate(priorities, 1)]}
+
+    def render(self, value):
+        metadata = {"repository": "o/r", "commit": "abc", "date": "2026-11-06",
+                    "provider": "codex", "syntax_checks": [], "files": ["code/analysis.py"],
+                    "omitted": [], "fingerprint": "123"}
+        return audit.render_report(value, metadata)
+
+    def test_more_than_three_findings_allowed_and_all_evidence_validated(self):
+        value = self.findings_review(["medium"] * 5)
+        self.assertEqual(audit.validate_review(value, self.files), value)
+        # Provider output schemas must also allow the full findings list.
+        self.assertNotIn("maxItems", audit.SCHEMA["properties"]["findings"])
+        value["findings"][-1]["evidence"] = "invented evidence"
+        with self.assertRaises(audit.AuditError):
+            audit.validate_review(value, self.files)
+
+    def test_report_keeps_three_visible_and_preserves_additional_details(self):
+        value = self.findings_review(["medium"] * 5)
+        value["findings"][3]["example"] = "value = 1"
+        report = self.render(value)
+        visible, _, rest = report.partition("<details>")
+        additional, close, footer = rest.partition("</details>")
+        self.assertIn("## Start here", visible)
+        for index in (1, 2, 3):
+            self.assertIn(f"Finding {index}", visible)
+        for index in (4, 5):
+            self.assertNotIn(f"Finding {index}", visible)
+            self.assertIn(f"Finding {index}", additional)
+        self.assertIn("Additional improvements (2)", additional)
+        self.assertIn("/blob/abc/code/analysis.py#L1", additional)
+        self.assertIn("**Next step:** Document the substantive meaning.", additional)
+        self.assertIn("**Done when:**", additional)
+        self.assertIn("```\nvalue = 1\n```", additional)
+        self.assertTrue(close)
+        self.assertIn("### What was checked", footer)
+        self.assertEqual(len(value["findings"]), 5)
+
+    def test_all_high_priority_findings_stay_visible_even_if_unsorted(self):
+        value = self.findings_review(["medium", "high", "high", "medium", "high", "high"])
+        report = self.render(value)
+        visible, _, additional = report.partition("<details>")
+        for index in (2, 3, 5, 6):
+            self.assertIn(f"Finding {index}", visible)
+            self.assertNotIn(f"Finding {index}", additional)
+        self.assertNotIn("### Medium:", visible)
+        self.assertIn("Finding 1", additional)
+        self.assertIn("Finding 4", additional)
+        # Presentation must not alter the saved review's original findings.
+        self.assertEqual(value["findings"][0]["priority"], "medium")
+
+    def test_short_and_empty_reports_have_no_extra_section(self):
+        for priorities in ([], ["medium"], ["medium"] * 3, ["high"] * 4):
+            with self.subTest(priorities=priorities):
+                report = self.render(self.findings_review(priorities))
+                self.assertNotIn("<details>", report)
+                self.assertNotIn("Additional improvements", report)
+        self.assertNotIn("## Start here", self.render(self.findings_review([])))
 
     def test_rejects_invented_evidence(self):
         with self.assertRaises(audit.AuditError):
@@ -318,6 +381,21 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertIn("config/analysis.yaml", payload["eligible_file_inventory"])
         self.assertTrue(omitted)
         self.assertNotIn("private value", prompt)
+
+    def test_windows_master_scripts_are_included_without_python_parsing(self):
+        scripts = {"run.ps1": "Write-Error 'not to be executed'\n",
+                   "run.cmd": "exit /b 99\n", "run.bat": "exit /b 99\n"}
+        for name, source in scripts.items():
+            self.write(name, source)
+        self.git("add", ".")
+        self.git("commit", "-qm", "Windows master scripts")
+        files, omitted, manifest = audit.collect_sources(self.root, "HEAD")
+        by_name = {source["file"]: source for source in files}
+        for name, source in scripts.items():
+            self.assertIn(name, manifest)
+            self.assertEqual(by_name[name]["text"], source)
+            self.assertEqual(audit.syntax_checks([by_name[name]]), [])
+        self.assertEqual(omitted, [])
 
     def test_size_limits_are_disclosed(self):
         with patch.object(audit, "MAX_FILE", 2):

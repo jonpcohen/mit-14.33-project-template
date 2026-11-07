@@ -24,11 +24,11 @@ import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
 PROVIDERS = ("codex", "claude", "gemini")
-VERSION = 3
+VERSION = 5
 COURSE_END = "2026-12-04"
 MAX_FILE = 60_000
 MAX_CONTEXT = 240_000
-CODE_SUFFIXES = {".py", ".r", ".do", ".ado", ".jl", ".m", ".sh", ".sql", ".ipynb", ".rmd", ".qmd"}
+CODE_SUFFIXES = {".py", ".r", ".do", ".ado", ".jl", ".m", ".sh", ".ps1", ".bat", ".cmd", ".sql", ".ipynb", ".rmd", ".qmd"}
 SKIP_PARTS = {".audit", ".git", ".venv", "venv", "env", "node_modules", "renv", "vendor", "archive", "archived", "__pycache__", "site-packages", "tests", "test"}
 SETUP_NAMES = {"pyproject.toml", "requirements.txt", "environment.yml", "environment.yaml", "renv.lock", "description", "makefile", "justfile", ".env.example", "package.json", "project.toml"}
 CONFIG_SUFFIXES = {".toml", ".yaml", ".yml", ".json", ".ini", ".cfg"}
@@ -39,7 +39,7 @@ SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
         "summary": {"type": "string"},
-        "findings": {"type": "array", "maxItems": 3, "items": {
+        "findings": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "properties": {
                 **{k: {"type": "string"} for k in ("title", "file", "evidence", "why", "fix", "success_criterion", "example")},
@@ -318,8 +318,8 @@ def validate_review(review, files):
     if not isinstance(review, dict) or not isinstance(review.get("summary"), str) or not review["summary"].strip():
         raise AuditError("Provider did not return a valid review summary.")
     findings = review.get("findings")
-    if not isinstance(findings, list) or len(findings) > 3:
-        raise AuditError("Provider must return a list of at most three findings.")
+    if not isinstance(findings, list):
+        raise AuditError("Provider must return a list of findings.")
     for finding in findings:
         if not isinstance(finding, dict):
             raise AuditError("Malformed finding.")
@@ -371,7 +371,14 @@ def render_report(review, metadata):
     lines = [f"# Research reproducibility audit — {metadata['date']}", "",
              f"Reviewed [{sha[:10]}](https://github.com/{repo}/commit/{sha}) with **{metadata['provider']}**.", "",
              review["summary"], ""]
-    for finding in review["findings"]:
+    # Keep every serious finding visible, even when there are more than three.
+    findings = sorted(review["findings"], key=lambda f: f["priority"] != "high")
+    visible_count = max(3, sum(f["priority"] == "high" for f in findings))
+    if findings:
+        lines += ["## Start here", ""]
+    for index, finding in enumerate(findings):
+        if index == visible_count:
+            lines += ["<details>", f"<summary>Additional improvements ({len(findings) - visible_count})</summary>", ""]
         link = source_link(repo, sha, finding["file"], finding["line"])
         lines += [f"### {finding['priority'].capitalize()}: {finding['title']} ({finding['confidence']})", "",
                   f"[{finding['file']}, line {finding['line']}]({link})", "",
@@ -383,6 +390,8 @@ def render_report(review, metadata):
             # Choose a fence that cannot be closed by backticks in the example.
             fence = "`" * max(3, max((len(s) + 1 for s in re.findall(r"`+", finding["example"])), default=0))
             lines += ["**Example:**", "", fence, finding["example"], fence, ""]
+    if len(findings) > visible_count:
+        lines += ["</details>", ""]
     if not review["findings"]:
         lines += ["No supported priority findings in the inspected files. This does not establish that the analysis reproduces.", ""]
     checks = metadata["syntax_checks"]
