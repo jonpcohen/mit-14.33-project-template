@@ -16,7 +16,7 @@ prompts to complete.
 ## Weekly research code review
 
 The [audit setup guide](tools/research-audit/README.md) explains how to enable
-weekly code reviews on your computer using an existing Codex, Claude Code, or
+optional weekly code reviews through December 4, 2026, on your computer using an existing Codex, Claude Code, or
 Gemini CLI login. Reviews examine the pushed default branch and post a brief
 GitHub issue; they do not run the analysis. The latest local report is saved
 at `.audit/latest.md`, which is ignored by Git.

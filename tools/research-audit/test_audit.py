@@ -1,8 +1,10 @@
 """Offline checks: no model calls, GitHub writes, or scheduler installation."""
 
 import argparse
+import contextlib
 import datetime as dt
 import importlib.util
+import io
 import json
 from pathlib import Path
 import plistlib
@@ -21,16 +23,18 @@ def review(file="code/analysis.py", evidence="value = 1"):
     return {"summary": "One assumption warrants checking.", "findings": [{
         "priority": "medium", "confidence": "check", "title": "Explain the analysis constant",
         "file": file, "line": 1, "evidence": evidence, "why": "The intended meaning is unclear.",
-        "fix": "Document the substantive meaning."}]}
+        "category": "Documentation", "fix": "Document the substantive meaning.",
+        "success_criterion": "A reader can identify what value measures and its units.", "example": ""}]}
 
 
 class SourceTests(unittest.TestCase):
     def test_scope(self):
-        for name in ("data/raw/values.csv", "data/raw/secret.py", "output/result.json", "paper/draft.qmd", "archive/old.py", ".venv/lib/example.py", "tests/test_analysis.py", ".env", "tools/research-audit/audit.py"):
+        for name in ("data/raw/values.csv", "data/raw/secret.py", "output/result.json", "paper/draft.qmd", "archive/old.py", ".venv/lib/example.py", "tests/test_analysis.py", ".env", "config/secrets.json", "credentials.json", "data/config.yaml", "tools/research-audit/audit.py"):
             self.assertIsNone(audit.source_kind(name), name)
         for name in ("code/clean.py", "code/table.R", "code/results.do", "code/notebook.ipynb", "analysis.qmd"):
             self.assertEqual(audit.source_kind(name), "code", name)
-        for name in ("README.md", "data/raw/README.md", "requirements.txt", ".env.example"):
+        for name in ("README.md", "data/raw/README.md", "requirements.txt", ".env.example",
+                     "config.yaml", "config/analysis.json", "settings.toml", "uv.lock", "requirements-dev.txt"):
             self.assertEqual(audit.source_kind(name), "documentation", name)
 
     def test_redaction_preserves_lines(self):
@@ -72,6 +76,50 @@ class ReviewTests(unittest.TestCase):
     def test_accepts_empty_findings(self):
         value = {"summary": "No material risk found in the supplied code.", "findings": []}
         self.assertEqual(audit.validate_review(value, self.files), value)
+
+    def test_category_validation_and_rendering(self):
+        value = review()
+        audit.validate_review(value, self.files)
+        metadata = {"repository": "o/r", "commit": "abc", "date": "2026-11-06",
+                    "provider": "codex", "syntax_checks": [], "files": ["code/analysis.py"],
+                    "omitted": [], "fingerprint": "123"}
+        self.assertIn("**Practice:** Documentation", audit.render_report(value, metadata))
+        value["findings"][0]["category"] = "Packaging"
+        with self.assertRaises(audit.AuditError):
+            audit.validate_review(value, self.files)
+        del value["findings"][0]["category"]
+        with self.assertRaises(audit.AuditError):
+            audit.validate_review(value, self.files)
+
+    def test_completion_criterion_and_optional_example(self):
+        value = review()
+        metadata = {"repository": "o/r", "commit": "abc", "date": "2026-11-06",
+                    "provider": "codex", "syntax_checks": [], "files": ["code/analysis.py"],
+                    "omitted": [], "fingerprint": "123"}
+        audit.validate_review(value, self.files)
+        report = audit.render_report(value, metadata)
+        self.assertIn("**Done when:** A reader can identify", report)
+        self.assertNotIn("**Example:**", report)
+        value["findings"][0]["example"] = '# value is measured in dollars.\nvalue = 1'
+        audit.validate_review(value, self.files)
+        report = audit.render_report(value, metadata)
+        self.assertIn('```\n# value is measured in dollars.\nvalue = 1\n```', report)
+        # Previously saved reports without the new fields remain readable.
+        del value["findings"][0]["success_criterion"]
+        del value["findings"][0]["example"]
+        self.assertNotIn("**Done when:**", audit.render_report(value, metadata))
+
+    def test_rejects_missing_completion_criterion_and_long_examples(self):
+        for criterion in (None, "", " ", 12):
+            value = review()
+            value["findings"][0]["success_criterion"] = criterion
+            with self.subTest(criterion=criterion), self.assertRaises(audit.AuditError):
+                audit.validate_review(value, self.files)
+        for example in (None, 12, "line\n" * 6):
+            value = review()
+            value["findings"][0]["example"] = example
+            with self.subTest(example=example), self.assertRaises(audit.AuditError):
+                audit.validate_review(value, self.files)
 
     def test_parses_all_provider_envelopes(self):
         value = review()
@@ -143,6 +191,75 @@ class ScheduleTests(unittest.TestCase):
         self.assertIn("OnCalendar=*-*-* *:17:00", timer)
 
 
+class StatusTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="audit-status-")
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.now = dt.datetime(2026, 11, 6, 12)
+        self.config = {"provider": "codex", "scheduler": {"system": "Darwin"},
+                       "day": "sun", "time": "18:17", "end_date": "2026-12-04",
+                       "next_due": dt.datetime(2026, 11, 8, 18, 17).timestamp()}
+
+    def test_no_setup_or_report(self):
+        with patch.object(audit, "command") as command:
+            text = audit.render_status(self.directory, {}, {}, self.now)
+        command.assert_not_called()
+        self.assertIn("Provider: not configured", text)
+        self.assertIn("Automatic reviews: off", text)
+        self.assertIn("Latest saved report: none yet", text)
+        self.assertIn("--provider codex --no-post", text)
+
+    def test_active_overdue_retry_and_expired_schedule(self):
+        text = audit.render_status(self.directory, self.config, {}, self.now)
+        self.assertIn("Sunday at 18:17", text)
+        self.assertIn("Next review due: 2026-11-08 18:17", text)
+        self.assertIn("Last day of automatic reviews: 2026-12-04", text)
+        self.assertIn("audit.py uninstall", text)
+        self.config["next_due"] = 0
+        self.assertIn("overdue", audit.render_status(self.directory, self.config, {}, self.now))
+        state = {"retry_after": dt.datetime(2026, 11, 7, 18).timestamp()}
+        self.assertIn("Next review due: 2026-11-07 18:00",
+                      audit.render_status(self.directory, self.config, state, self.now))
+        self.config["next_due"] = dt.datetime(2026, 12, 6, 18, 17).timestamp()
+        self.assertIn("No further automatic reviews", audit.render_status(self.directory, self.config, {}, self.now))
+        text = audit.render_status(self.directory, self.config, {}, dt.datetime(2026, 12, 5))
+        self.assertIn("ended after 2026-12-04", text)
+        self.assertIn("removal is pending", text)
+        self.assertNotIn("Next review due", text)
+
+    def test_failed_attempt_does_not_hide_saved_report_and_offers_login_help(self):
+        (self.directory / "latest.md").write_text("Earlier successful report")
+        details = self.directory / "runs" / "2026-11-06-new" / "run.json"
+        audit.write_json(details, {"date": "2026-11-06", "provider": "claude",
+                                  "commit": "abc123", "scope": "local HEAD", "status": "failed",
+                                  "error": "Authentication failed; sign in again."})
+        (details.parent / "provider.log").write_text("CLI error")
+        text = audit.render_status(self.directory, {}, {}, self.now)
+        self.assertIn(f"Latest saved report: {self.directory / 'latest.md'}", text)
+        self.assertIn("review failed; no new report posted", text)
+        self.assertIn("abc123 (local HEAD)", text)
+        self.assertIn("open claude interactively", text)
+        self.assertIn("--provider claude --no-post", text)
+        audit.write_json(details, {"date": "2026-11-06", "status": "post_failed"})
+        text = audit.render_status(self.directory, self.config, {}, self.now)
+        self.assertIn("gh auth status", text)
+        self.assertIn("retry posting the saved report", text)
+
+    def test_status_command_defaults_to_text_and_retains_json_option(self):
+        audit.write_json(self.directory / "config.json", self.config)
+        with patch.object(audit, "project_root", return_value=self.directory), \
+             patch.object(audit, "state_dir", return_value=self.directory):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                audit.main(["status"])
+            self.assertTrue(output.getvalue().startswith("Provider: codex"))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                audit.main(["status", "--json"])
+            self.assertEqual(json.loads(output.getvalue())["config"], self.config)
+
+
 class GitIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="audit-tests-")
@@ -186,6 +303,21 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertIn("::cell-1", content)
         self.assertIn("value = 1", content)
         self.assertEqual(omitted, [])
+
+    def test_configuration_and_inventory_with_omissions(self):
+        self.write("config/analysis.yaml", "end_year: 2026\n")
+        self.write("config/secrets.json", '{"password": "private value"}')
+        self.git("add", ".")
+        self.git("commit", "-qm", "Configuration")
+        with patch.object(audit, "MAX_CONTEXT", 25):
+            files, omitted, manifest = audit.collect_sources(self.root, "HEAD")
+        self.assertIn("config/analysis.yaml", manifest)
+        self.assertNotIn("config/secrets.json", manifest)
+        prompt = audit.review_prompt(files, omitted, [], None, manifest)
+        payload = json.loads(prompt.split("nothing was executed.\n", 1)[1])
+        self.assertIn("config/analysis.yaml", payload["eligible_file_inventory"])
+        self.assertTrue(omitted)
+        self.assertNotIn("private value", prompt)
 
     def test_size_limits_are_disclosed(self):
         with patch.object(audit, "MAX_FILE", 2):
@@ -255,16 +387,39 @@ class GitIntegrationTests(unittest.TestCase):
         generated.assert_called_once()
         posted.assert_called_once()
 
+    def test_next_review_receives_previous_findings_commit_and_coverage(self):
+        from unittest.mock import Mock
+        generated = Mock(return_value=review())
+        self.args.no_post = True
+        self.run_with_mocks(generated, Mock())
+        first_sha = self.sha
+        self.write("code/analysis.py", "# This constant measures dollars.\nvalue = 1\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "Explain constant")
+        self.sha = self.git("rev-parse", "HEAD").strip()
+        generated = Mock(return_value={"summary": "The constant's units are now documented.", "findings": []})
+        self.run_with_mocks(generated, Mock())
+        prompt = generated.call_args.args[2]
+        payload = json.loads(prompt.split("nothing was executed.\n", 1)[1])
+        self.assertEqual(payload["previous_review"], review())
+        self.assertEqual(payload["previous_review_context"]["commit"], first_sha)
+        self.assertIn("code/analysis.py", payload["previous_review_context"]["files"])
+        self.assertEqual(payload["previous_review_context"]["scope"], "local HEAD")
+        current = {source["file"]: source["source"] for source in payload["files"]}
+        self.assertIn("# This constant measures dollars.", current["code/analysis.py"])
+        self.assertIn("units are now documented", (self.directory / "latest.md").read_text())
+
     def test_not_due_never_contacts_github_or_model(self):
         self.args.scheduled = True
         with patch.object(audit, "repository_info") as info:
-            audit.perform_run(self.root, self.directory, {"next_due": audit.time.time() + 3600}, self.args)
+            audit.perform_run(self.root, self.directory, {"next_due": audit.time.time() + 3600, "scheduler": {"system": "test"}, "end_date": "2099-12-04"}, self.args)
         info.assert_not_called()
 
     def test_multiple_missed_weeks_catch_up_once_then_return_to_schedule(self):
         from unittest.mock import Mock
         self.args.scheduled = True
-        config = {"day": "sun", "time": "18:17", "next_due": audit.time.time() - 14 * 86400}
+        config = {"day": "sun", "time": "18:17", "next_due": audit.time.time() - 14 * 86400,
+                  "scheduler": {"system": "test"}, "end_date": "2099-12-04"}
         generated = Mock(return_value=review())
         posted = Mock(return_value="https://github.com/owner/repo/issues/4")
         with patch.object(audit, "repository_info", return_value=("owner/repo", "main", self.sha)) as info, \
@@ -276,6 +431,76 @@ class GitIntegrationTests(unittest.TestCase):
         generated.assert_called_once()
         posted.assert_called_once()
         info.assert_called_once()
+
+    def test_expired_schedule_removes_itself_before_any_network_call(self):
+        self.args.scheduled = True
+        for system in ("Darwin", "Windows", "Linux"):
+            with self.subTest(system=system):
+                path = self.root / "schedule.plist"
+                path.write_text("schedule")
+                path.with_suffix(".timer").write_text("timer")
+                config = {"end_date": "2000-12-04", "next_due": 0,
+                          "scheduler": {"system": system, "path": str(path), "label": "test"}}
+                audit.write_json(self.directory / "config.json", config)
+                with patch.object(audit, "repository_info") as info, patch.object(audit, "command") as cmd:
+                    audit.perform_run(self.root, self.directory, config, self.args)
+                info.assert_not_called()
+                self.assertFalse(path.exists())
+                saved = audit.read_json(self.directory / "config.json")
+                self.assertNotIn("scheduler", saved)
+                self.assertTrue(cmd.called)
+
+    def test_legacy_schedule_expires_and_cutoff_is_inclusive(self):
+        self.args.scheduled = True
+        class CourseDate(dt.date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 12, 5)
+        with patch.object(audit.dt, "date", CourseDate), patch.object(audit, "uninstall") as remove, \
+             patch.object(audit, "repository_info") as info:
+            audit.perform_run(self.root, self.directory, {"next_due": 0}, self.args)
+        remove.assert_called_once()
+        info.assert_not_called()
+        class LastDay(dt.date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 12, 4)
+        with patch.object(audit.dt, "date", LastDay), patch.object(audit, "uninstall") as remove:
+            audit.perform_run(self.root, self.directory,
+                              {"scheduler": {"system": "test"}, "next_due": float("inf")}, self.args)
+        remove.assert_not_called()
+
+    def test_manual_review_still_works_after_expiry(self):
+        from unittest.mock import Mock
+        generated = Mock(return_value=review())
+        self.args.no_post = True
+        with patch.object(audit, "repository_info", return_value=("owner/repo", "main", self.sha)), \
+             patch.object(audit, "generate_review", generated), patch.object(audit, "uninstall") as remove:
+            audit.perform_run(self.root, self.directory, {"end_date": "2000-12-04"}, self.args)
+        generated.assert_called_once()
+        remove.assert_not_called()
+
+    def test_setup_saves_cutoff_before_scheduler_can_start(self):
+        args = argparse.Namespace(provider="codex", model=None, day="sun", time="18:17",
+                                  no_schedule=False, end_date="2099-12-04")
+        path = self.root / "schedule.plist"
+        def registration(cmd, **kwargs):
+            if cmd[0] == "launchctl" and cmd[1] == "bootstrap":
+                config = audit.read_json(self.directory / "config.json")
+                self.assertEqual(config["end_date"], "2099-12-04")
+                self.assertEqual(config["scheduler"]["system"], "Darwin")
+        with patch.object(audit.shutil, "which", return_value="/bin/codex"), \
+             patch.object(audit, "scheduler_spec", return_value=(path, b"schedule", "test")), \
+             patch.object(audit.platform, "system", return_value="Darwin"), \
+             patch.object(audit, "command", side_effect=registration):
+            audit.install(self.root, self.directory, args)
+        self.assertTrue(path.exists())
+
+    def test_install_rejects_past_end_date(self):
+        args = argparse.Namespace(no_schedule=False, end_date="2000-01-01")
+        with patch.object(audit, "command") as cmd, self.assertRaises(audit.AuditError):
+            audit.install(self.root, self.directory, args)
+        cmd.assert_not_called()
 
     def test_reinstall_preserves_overdue_review(self):
         overdue = audit.time.time() - 86400

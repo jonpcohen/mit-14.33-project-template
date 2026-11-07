@@ -51,13 +51,16 @@ installation does not provide `python3`.
    python3 tools/research-audit/audit.py run --provider codex
    ```
 
-4. Enable weekly reviews, choosing your provider:
+4. Optionally enable weekly reviews, choosing your provider:
 
    ```sh
    python3 tools/research-audit/audit.py install --provider codex
    ```
 
-   The default is **Sunday at 18:17 in your computer's local time**. To change it:
+   The default is **Sunday at 18:17 in your computer's local time**, through
+   **December 4, 2026**, the last day of this course. Setup prints the end date
+   and the command to stop early. Manual reviews work without installing a schedule.
+   To change the weekly time:
 
    ```sh
    python3 tools/research-audit/audit.py install --provider gemini --day fri --time 16:17
@@ -98,6 +101,28 @@ After updating the scheduling code, re-run the same `install --provider ...`
 command to refresh the operating-system schedule. Reinstalling with the same
 day and time preserves an already-overdue review.
 
+## When automatic reviews stop
+
+Automatic reviews end after **December 4, 2026**, in the computer's local time.
+At the first scheduler check after that date, the tool removes its OS schedule
+before contacting GitHub or a model, even if a review is overdue or a post failed.
+If the computer is off, cleanup waits until it is next on and the user is logged
+in. Saved reports remain available, and manual reviews still work.
+
+To stop earlier:
+
+```sh
+python3 tools/research-audit/audit.py uninstall
+```
+
+Keep the project and Python installation in place until removal; deleting them
+first prevents automatic cleanup. If moving/deleting the project, uninstall
+first. After the course end date, installing a new schedule requires explicitly
+choosing a future end date, for example `--end-date 2027-05-07`. This does not
+extend other students' schedules. Older installations using the updated runner
+also use the December 4 cutoff even without an end date in their saved config.
+Existing copies need this tool update to receive the cutoff.
+
 ## Saved artifacts
 
 Each new review uses a directory such as:
@@ -137,17 +162,50 @@ preserved until you remove the local `.audit/` directory yourself.
 
 ## Review scope and limits
 
-The [rubric](rubric.md) focuses on portability, execution order, dependency and
-data-access instructions, fragile hardcoding, joins, units, sample restrictions,
-and inconsistent transformations. Findings require matching file-and-line
-evidence. An unverified risk is labeled **check**, rather than called a proven
-error. The report is advisory; matching evidence does not prove the diagnosis.
+The audit helps undergraduate economics students with varied preparation,
+including little coding or research experience, learn foundational concepts in
+code management, project organization, and reproducible research.
+The [rubric](rubric.md) covers shared parameters,
+reproducible environments, execution order, safe data handling, manageable repeated
+code, and project-specific README documentation. Each finding names the practice,
+explains its purpose and consequence for this research in plain language, and
+gives a precise suggestion without assuming prior familiarity with the convention.
+Each finding includes a **Next step** and a **Done when** criterion describing
+what a successful fix accomplishes. A short code example, up to five lines, is
+included when it helps explain the suggestion using the project's own variables
+and structure. Suggested examples are not executed by the audit.
+These are inspection prompts, not required criticisms; a review can return no
+findings. Advice should fit the project's size and stage. Broader organizational
+changes are appropriate when their benefits justify the work. Findings require
+matching file-and-line evidence. An unverified risk is labeled **check**, rather
+than called a proven error. The report is advisory; matching evidence does not
+prove the diagnosis.
+
+Reviews use the previous locally saved report and its commit/coverage information
+to acknowledge verified fixes and carry forward important unresolved concerns.
+An earlier finding is not considered resolved merely because the relevant code
+was omitted from the current review. Fixing earlier issues does not create a
+requirement for new findings. This comparison depends on keeping local audit state.
+
+The review assesses the supplied code as a usable research pipeline. It encourages
+documentation of substantive intent and simple checks of important expectations.
+Preventive suggestions should explain the specific failure they help avoid.
+Successful checks can be silent; a useful error message can flag a violated
+expectation. The audit does not require a history of exploratory work or routine
+summary tables to justify every cleaning step. Additional diagnostics need a
+specific concern and a clear question they would resolve. Missing diagnostic
+output alone is not evidence that the student failed to check their work.
 
 The runner reads committed source and setup documentation directly from Git.
 It excludes data values, paper contents, generated output, notebook outputs,
 test suites, installed packages, and directories named `archive` or `archived`.
-README files describing data and outputs remain eligible. It does not inspect
-uncommitted work. Recognizable tokens and literal credential assignments are
+README files describing data and outputs remain eligible. It includes common configuration files (config/settings/parameters/params in
+JSON, YAML, TOML, INI, or CFG, and those formats under config/configs), dependency
+files, and common lock files. Filenames containing secret, credential, password,
+or token are excluded. These rules cannot identify every sensitive file; review
+what you commit. The model receives an eligible-file inventory before size limits
+and an omissions list, so omitted content is not treated as an absent file.
+It does not inspect uncommitted work. Recognizable tokens and literal credential assignments are
 redacted before review; do not commit secrets or confidential material in the
 first place. Eligible code is sent to your chosen provider under your account.
 
@@ -170,8 +228,11 @@ source bundle in a temporary directory, not the student's working tree.
 ## Useful commands
 
 ```sh
-# Show schedule configuration, last run, and report location
+# Show the schedule, next review, end date, latest report, and recorded problems
 python3 tools/research-audit/audit.py status
+
+# Show raw configuration and state for troubleshooting
+python3 tools/research-audit/audit.py status --json
 
 # Run now (uses the installed provider configuration)
 python3 tools/research-audit/audit.py run
@@ -188,6 +249,12 @@ python3 tools/research-audit/audit.py install --provider claude --no-schedule
 # Remove the schedule, preserving every saved report
 python3 tools/research-audit/audit.py uninstall
 ```
+
+`status` reads saved local information without contacting GitHub or a model.
+It shows whether automatic reviews are configured, when they are due and end,
+and how to stop them. It distinguishes the latest saved report from a more recent
+failed attempt, with recovery guidance for recorded login or publishing problems.
+It does not verify live OS task registration or current login validity.
 
 For authentication failures, open the chosen CLI interactively, sign in again,
 and retry the audit. For GitHub errors, run `gh auth status` and verify that

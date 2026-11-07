@@ -24,12 +24,16 @@ import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
 PROVIDERS = ("codex", "claude", "gemini")
-VERSION = 1
+VERSION = 3
+COURSE_END = "2026-12-04"
 MAX_FILE = 60_000
 MAX_CONTEXT = 240_000
 CODE_SUFFIXES = {".py", ".r", ".do", ".ado", ".jl", ".m", ".sh", ".sql", ".ipynb", ".rmd", ".qmd"}
 SKIP_PARTS = {".audit", ".git", ".venv", "venv", "env", "node_modules", "renv", "vendor", "archive", "archived", "__pycache__", "site-packages", "tests", "test"}
 SETUP_NAMES = {"pyproject.toml", "requirements.txt", "environment.yml", "environment.yaml", "renv.lock", "description", "makefile", "justfile", ".env.example", "package.json", "project.toml"}
+CONFIG_SUFFIXES = {".toml", ".yaml", ".yml", ".json", ".ini", ".cfg"}
+PRACTICES = ("Shared parameters", "Reproducible environment", "Execution order",
+             "Safe data handling", "Repeated code", "Documentation", "Other research risk")
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -38,12 +42,13 @@ SCHEMA = {
         "findings": {"type": "array", "maxItems": 3, "items": {
             "type": "object", "additionalProperties": False,
             "properties": {
-                **{k: {"type": "string"} for k in ("title", "file", "evidence", "why", "fix")},
+                **{k: {"type": "string"} for k in ("title", "file", "evidence", "why", "fix", "success_criterion", "example")},
+                "category": {"type": "string", "enum": list(PRACTICES)},
                 "priority": {"type": "string", "enum": ["high", "medium"]},
                 "confidence": {"type": "string", "enum": ["confirmed", "check"]},
                 "line": {"type": "integer", "minimum": 1},
             },
-            "required": ["priority", "confidence", "title", "file", "line", "evidence", "why", "fix"],
+            "required": ["priority", "confidence", "title", "file", "line", "evidence", "why", "fix", "success_criterion", "example", "category"],
         }},
     }, "required": ["summary", "findings"],
 }
@@ -136,7 +141,14 @@ def source_kind(name):
         return "documentation" if base.startswith("readme") else None
     if base.startswith(".env") and base != ".env.example":
         return None
-    if base in SETUP_NAMES or base.startswith("readme"):
+    if any(word in base for word in ("secret", "credential", "password", "token")):
+        return None
+    configuration = (path.suffix.lower() in CONFIG_SUFFIXES
+                     and (base.split(".")[0] in {"config", "settings", "parameters", "params"}
+                          or bool(parts & {"config", "configs"})))
+    dependency = (base in {"uv.lock", "poetry.lock", "pipfile", "pipfile.lock"}
+                  or (base.startswith("requirements") and path.suffix.lower() == ".txt"))
+    if base in SETUP_NAMES or base.startswith("readme") or configuration or dependency:
         return "documentation"
     return "code" if path.suffix.lower() in CODE_SUFFIXES else None
 
@@ -237,13 +249,16 @@ def fingerprint(manifest, provider, model):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def review_prompt(files, omitted, checks, previous):
+def review_prompt(files, omitted, checks, previous, manifest=None, previous_metadata=None):
     bundle = [{"file": f["file"], "source": "\n".join(f"{i}: {line}" for i, line in enumerate(f["text"].splitlines(), 1))} for f in files]
     return ((HERE / "rubric.md").read_text(encoding="utf-8") + "\n\n"
             + "Python syntax diagnostics use Python " + platform.python_version() + ". "
             + "Other languages were inspected only; nothing was executed.\n"
-            + json.dumps({"files": bundle, "omitted": omitted, "syntax_checks": checks,
-                          "previous_review": previous}, ensure_ascii=False))
+            + json.dumps({"eligible_file_inventory": sorted(manifest or {f["file"]: None for f in files}),
+                          "files": bundle, "omitted": omitted, "syntax_checks": checks,
+                          "previous_review": previous,
+                          "previous_review_context": {k: previous_metadata[k] for k in ("date", "commit", "scope", "files")
+                                                      if k in (previous_metadata or {})}}, ensure_ascii=False))
 
 
 def subscription_environment(config):
@@ -308,8 +323,13 @@ def validate_review(review, files):
     for finding in findings:
         if not isinstance(finding, dict):
             raise AuditError("Malformed finding.")
-        if any(not isinstance(finding.get(k), str) or not finding[k].strip() for k in ("title", "file", "evidence", "why", "fix")):
+        if any(not isinstance(finding.get(k), str) or not finding[k].strip() for k in ("title", "file", "evidence", "why", "fix", "success_criterion")):
             raise AuditError("A finding is missing its explanation or evidence.")
+        example = finding.get("example")
+        if not isinstance(example, str) or len(example.splitlines()) > 5:
+            raise AuditError("A finding's example must be a string of at most five lines, or empty.")
+        if finding.get("category") not in PRACTICES:
+            raise AuditError("A finding has an invalid practice category.")
         line = finding.get("line")
         lines = by_name.get(finding["file"], [])
         if type(line) is not int or not 1 <= line <= len(lines) or finding["evidence"] not in lines[line - 1]:
@@ -355,7 +375,14 @@ def render_report(review, metadata):
         link = source_link(repo, sha, finding["file"], finding["line"])
         lines += [f"### {finding['priority'].capitalize()}: {finding['title']} ({finding['confidence']})", "",
                   f"[{finding['file']}, line {finding['line']}]({link})", "",
+                  f"**Practice:** {finding.get('category', 'Other research risk')}", "",
                   f"> {finding['evidence']}", "", finding["why"], "", f"**Next step:** {finding['fix']}", ""]
+        if finding.get("success_criterion"):
+            lines += [f"**Done when:** {finding['success_criterion']}", ""]
+        if finding.get("example", "").strip():
+            # Choose a fence that cannot be closed by backticks in the example.
+            fence = "`" * max(3, max((len(s) + 1 for s in re.findall(r"`+", finding["example"])), default=0))
+            lines += ["**Example:**", "", fence, finding["example"], fence, ""]
     if not review["findings"]:
         lines += ["No supported priority findings in the inspected files. This does not establish that the analysis reproduces.", ""]
     checks = metadata["syntax_checks"]
@@ -394,6 +421,14 @@ def perform_run(root, directory, config, args):
     with run_lock(directory):
         state = read_json(directory / "state.json", {})
         if args.scheduled:
+            # Gate before GitHub, providers, retries, and overdue catch-up.
+            # The fallback also expires installs made before end dates existed.
+            if dt.date.today() > dt.date.fromisoformat(config.get("end_date", COURSE_END)):
+                print("Course review schedule has ended; removing automatic reviews.")
+                uninstall(directory)
+                return
+            if not config.get("scheduler"):
+                return
             due = config.get("next_due", 0)
             retry = state.get("retry_after", 0)
             if time.time() < max(due, retry):
@@ -434,7 +469,8 @@ def perform_run(root, directory, config, args):
         try:
             if has_code:
                 previous = read_json(previous_run / "review.json") if previous_run else None
-                review = generate_review(provider, runtime_config, review_prompt(files, omitted, metadata["syntax_checks"], previous), files, run)
+                previous_metadata = read_json(previous_run / "run.json", {}) if previous_run else {}
+                review = generate_review(provider, runtime_config, review_prompt(files, omitted, metadata["syntax_checks"], previous, manifest, previous_metadata), files, run)
             else:
                 review = {"summary": "No eligible analysis code was available in this commit. No model review was run and no issue was posted.", "findings": []}
             write_json(run / "review.json", review)
@@ -546,6 +582,9 @@ def scheduler_spec(root, config, system=None):
 
 
 def install(root, directory, args):
+    end_date = getattr(args, "end_date", COURSE_END)
+    if not args.no_schedule and dt.date.fromisoformat(end_date) < dt.date.today():
+        raise AuditError("The schedule end date has passed. Use --no-schedule for manual reviews or choose a future --end-date.")
     executable = shutil.which(args.provider)
     if not executable:
         raise AuditError(f"Install {args.provider} and sign in before installing the audit schedule.")
@@ -556,7 +595,7 @@ def install(root, directory, args):
     config = {"provider": args.provider, "model": args.model, "executable": executable,
               "python": sys.executable, "path": os.environ.get("PATH", ""),
               "day": args.day, "time": args.time, "next_due": next_weekly(args.day, args.time),
-              "timeout_seconds": 900}
+              "timeout_seconds": 900, "end_date": end_date}
     if previous.get("day") == args.day and previous.get("time") == args.time:
         config["next_due"] = previous.get("next_due", config["next_due"])
     if not args.no_schedule:
@@ -564,6 +603,8 @@ def install(root, directory, args):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(body)
         system = platform.system()
+        config["scheduler"] = {"path": str(path), "label": label, "system": system}
+        write_json(directory / "config.json", config)
         if system == "Darwin":
             domain = f"gui/{os.getuid()}"
             command(["launchctl", "bootout", f"{domain}/{label}"], check=False)
@@ -580,6 +621,11 @@ def install(root, directory, args):
             command(["systemctl", "--user", "enable", "--now", f"{label}.timer"])
         config["scheduler"] = {"path": str(path), "label": label, "system": system}
     write_json(directory / "config.json", config)
+    if args.no_schedule:
+        print(f"Configured {args.provider} for manual reviews; no schedule installed.")
+        return
+    print(f"Automatic reviews end after {end_date} (local time); the next scheduler check removes the schedule.")
+    print("Stop earlier: python3 tools/research-audit/audit.py uninstall")
     print(f"Configured {args.provider}; weekly on {args.day} at {args.time} (computer's local time).")
     print("The hourly scheduler only checks whether a review is due; it does not call the model hourly.")
     print("Test now: python3 tools/research-audit/audit.py run --no-post")
@@ -600,7 +646,7 @@ def uninstall(directory):
         return
     label, path = scheduler["label"], Path(scheduler["path"])
     if scheduler["system"] == "Darwin":
-        command(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], check=False)
+        pass  # Unload last: launchctl may terminate this process.
     elif scheduler["system"] == "Windows":
         command(["schtasks", "/Delete", "/TN", label, "/F"])
     else:
@@ -610,13 +656,88 @@ def uninstall(directory):
     config.pop("scheduler")
     config.pop("next_due", None)
     write_json(directory / "config.json", config)
-    print("Schedule removed. Saved reports are preserved.")
+    print("Schedule removed. Saved reports are preserved.", flush=True)
+    if scheduler["system"] == "Darwin":
+        command(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], check=False)
+
+
+def date_value(value):
+    try:
+        return dt.date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Use YYYY-MM-DD, for example 2026-12-04.") from exc
 
 
 def clock_value(value):
     if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
         raise argparse.ArgumentTypeError("Use 24-hour HH:MM, for example 18:17.")
     return value
+
+
+def render_status(directory, config, state, now=None):
+    """Summarize saved local information without contacting GitHub or a provider."""
+    now = now or dt.datetime.now()
+    def local_time(stamp):
+        return dt.datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M")
+
+    provider = config.get("provider")
+    lines = [f"Provider: {provider or 'not configured'}"]
+    if config.get("scheduler"):
+        end = config.get("end_date", COURSE_END)
+        if now.date() > dt.date.fromisoformat(end):
+            lines += [f"Automatic reviews: ended after {end}.",
+                      "Schedule removal is pending the next scheduler check."]
+        else:
+            day = config.get("day", "sun")
+            weekday = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")[DAYS.index(day)]
+            lines += [f"Automatic reviews: configured weekly on {weekday} at {config.get('time', '18:17')} (local time).",
+                      f"Last day of automatic reviews: {end} (local time)."]
+            due = max(config.get("next_due", 0), state.get("retry_after", 0))
+            if due <= now.timestamp():
+                lines += ["Next review: overdue; will be attempted at the next scheduler check."]
+            elif dt.datetime.fromtimestamp(due).date() > dt.date.fromisoformat(end):
+                lines += ["No further automatic reviews are due before the end date."]
+            else:
+                lines += [f"Next review due: {local_time(due)} (local time)."]
+            lines += ["Reviews require this computer to be on, logged in, and connected to the internet."]
+        lines += ["Stop automatic reviews: python3 tools/research-audit/audit.py uninstall"]
+    else:
+        lines += ["Automatic reviews: off. You can run reviews manually."]
+
+    latest = directory / "latest.md"
+    lines += [f"Latest saved report: {latest}" if latest.exists() else "Latest saved report: none yet."]
+    if state.get("issue_url"):
+        lines += [f"Last published report: {state['issue_url']}"]
+
+    # The last attempt can have failed before replacing the last saved report.
+    attempts = sorted((directory / "runs").glob("*/run.json"))
+    if attempts:
+        details = attempts[-1]
+        metadata = read_json(details, {})
+        labels = {"started": "not completed", "saved": "report saved locally; not posted",
+                  "posted": "report posted to GitHub", "no_code": "no eligible analysis code; no model call or issue",
+                  "failed": "review failed; no new report posted", "post_failed": "report saved, but posting failed"}
+        result = metadata.get("status", "unknown")
+        lines += [f"Latest attempt: {metadata.get('date', 'unknown date')} — {labels.get(result, result)}."]
+        if metadata.get("commit"):
+            lines += [f"Reviewed commit: {metadata['commit'][:10]} ({metadata.get('scope', 'scope not recorded')})."]
+        if metadata.get("error"):
+            lines += [f"Problem: {metadata['error']}"]
+        if result == "post_failed":
+            lines += ["Check GitHub access with gh auth status, then rerun the review to retry posting the saved report."]
+        elif result == "failed":
+            lines += [f"Run details: {details}"]
+            if (details.parent / "provider.log").exists():
+                lines += [f"CLI log: {details.parent / 'provider.log'}"]
+            if any(word in metadata.get("error", "").lower() for word in ("auth", "sign in", "login")):
+                cli = metadata.get("provider", provider or "your model CLI")
+                lines += [f"For a model login problem, open {cli} interactively, sign in, and retry."]
+        provider = provider or metadata.get("provider")
+    command = "python3 tools/research-audit/audit.py run"
+    if not config.get("provider"):
+        command += f" --provider {provider or 'codex'}"
+    lines += [f"Preview a review without posting: {command} --no-post"]
+    return redact("\n".join(lines))
 
 
 def main(argv=None):
@@ -627,6 +748,8 @@ def main(argv=None):
     setup.add_argument("--model", help="Optional model supported by your subscription; otherwise use the CLI default")
     setup.add_argument("--day", choices=DAYS, default="sun")
     setup.add_argument("--time", type=clock_value, default="18:17")
+    setup.add_argument("--end-date", type=date_value, default=COURSE_END,
+                       help="Last day of automatic reviews, local time (default: %(default)s)")
     setup.add_argument("--no-schedule", action="store_true", help="Configure manual runs only")
     run = commands.add_parser("run", help="Review pushed default-branch code and post an issue")
     run.add_argument("--provider", choices=PROVIDERS)
@@ -635,7 +758,8 @@ def main(argv=None):
     run.add_argument("--force", action="store_true", help="Review again even if inputs have not changed")
     run.add_argument("--local", action="store_true", help="Review committed local HEAD rather than fetching the pushed default branch")
     run.add_argument("--scheduled", action="store_true", help=argparse.SUPPRESS)
-    commands.add_parser("status", help="Show configuration and the latest report location")
+    status = commands.add_parser("status", help="Show the schedule, latest report, and any recorded problem")
+    status.add_argument("--json", action="store_true", help="Show raw configuration and state for troubleshooting")
     commands.add_parser("uninstall", help="Remove the schedule and preserve reports")
     args = parser.parse_args(argv)
     if args.action == "run" and args.local and not args.no_post:
@@ -647,7 +771,12 @@ def main(argv=None):
     elif args.action == "uninstall":
         uninstall(directory)
     elif args.action == "status":
-        print(json.dumps({"config": read_json(directory / "config.json", {}), "state": read_json(directory / "state.json", {}), "latest_report": str(directory / "latest.md")}, indent=2))
+        config = read_json(directory / "config.json", {})
+        state = read_json(directory / "state.json", {})
+        if args.json:
+            print(json.dumps({"config": config, "state": state, "latest_report": str(directory / "latest.md")}, indent=2))
+        else:
+            print(render_status(directory, config, state))
     else:
         perform_run(root, directory, read_json(directory / "config.json", {}), args)
 
