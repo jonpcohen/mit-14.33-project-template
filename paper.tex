@@ -1,0 +1,51 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[round]{natbib}
+\usepackage{graphicx, booktabs, amsmath, hyperref}
+
+% Find every file by name in the paper_output folder
+\makeatletter\def\input@path{{paper_output/}}\makeatother
+\graphicspath{{paper_output/}}
+% \stat{name}: the number in name.txt
+\newcommand{\stat}[1]{\input{#1.txt}\unskip}
+% \fig{name}{caption}: name.pdf as a numbered figure
+\newcommand{\fig}[2]{\begin{figure}[htbp]\centering
+  \includegraphics[width=0.8\textwidth]{#1.pdf}\caption{#2}\label{fig:#1}\end{figure}}
+% \tbl{name}{caption}: name.tex as a numbered table
+\newcommand{\tbl}[2]{\begin{table}[htbp]\centering
+  \caption{#2}\label{tbl:#1}\input{#1.tex}\end{table}}
+
+\title{Prices, Promotions, and Quantities in a Synthetic Retail Panel}
+\author{A. Student}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+Building on classic models of consumer search \citep{stigler1961economics}
+and sales \citep{varian1980model}, this paper studies how posted prices
+relate to quantities sold in a synthetic retail panel.
+
+\section{Data}
+
+The panel has \stat{n-observations} observations, with an average posted
+price of \$\stat{mean-price}.
+
+Table \ref{tbl:results-by-product} summarizes the panel by product.
+
+\tbl{results-by-product}{Mean price (\$), mean quantity, and promotion rate by product.}
+
+\section{Results}
+
+Figure \ref{fig:price-quantity} plots quantity against posted price.
+
+\fig{price-quantity}{Quantity sold against posted price, with an ordinary least squares fit.}
+
+A one-unit increase in price is associated with a change of
+\stat{price-quantity-slope} units sold, in the spirit of \citet{stigler1961economics}.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
